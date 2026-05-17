@@ -46,8 +46,6 @@ echo -e "${BLUE}╚════════════════════�
 echo ""
 
 # ─── Prompt for webapp name ──────────────────────────────────────────────────
-# Propmt user for the parent directory of this new webapp directory
-
 
 read -p "Enter the name of your new web application: " APP_NAME
 
@@ -57,20 +55,38 @@ if [[ -z "$APP_NAME" ]]; then
     exit 1
 fi
 
+# ─── Prompt for parent directory ──────────────────────────────────────────────
+
+read -p "Enter the parent directory (default: current directory): " PARENT_DIR
+
+# Use current directory if empty
+if [[ -z "$PARENT_DIR" ]]; then
+    PARENT_DIR="."
+fi
+
+# Validate parent directory exists
+if [[ ! -d "$PARENT_DIR" ]]; then
+    error "Parent directory '$PARENT_DIR' does not exist."
+    exit 1
+fi
+
+# Create full app path
+APP_PATH="$PARENT_DIR/$APP_NAME"
+
 # Check if directory already exists
-if [[ -d "$APP_NAME" ]]; then
-    error "Directory '$APP_NAME' already exists. Choose a different name."
+if [[ -d "$APP_PATH" ]]; then
+    error "Directory '$APP_PATH' already exists. Choose a different name or parent directory."
     exit 1
 fi
 
 info "Creating new Flask-SocketIO web application: $APP_NAME"
+info "Location: $APP_PATH"
 echo ""
-
 
 # ─── Create root directory ───────────────────────────────────────────────────
 
-mkdir -p "$APP_NAME"
-cd "$APP_NAME"
+mkdir -p "$APP_PATH"
+cd "$APP_PATH"
 
 info "Setting up directory structure..."
 
@@ -1100,6 +1116,70 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
+# Setup systemctl service (optional)
+# ────────────────────────────────────────────────────────────────────────────
+
+read -p "Do you want to create a systemctl service to auto-start this app? (requires sudo) (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    # Check if service already exists
+    SERVICE_NAME="${APP_NAME,,}"  # Convert to lowercase
+    SERVICE_NAME="${SERVICE_NAME// /-}"  # Replace spaces with hyphens
+    
+    if systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE_NAME\.service"; then
+        warn "A systemctl service named '$SERVICE_NAME.service' already exists!"
+        read -p "Do you want to overwrite it? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            warn "Skipping systemctl service setup."
+            SERVICE_SETUP_SKIPPED=true
+        fi
+    fi
+    
+    if [[ $SERVICE_SETUP_SKIPPED != true ]]; then
+        info "Creating systemctl service file..."
+        
+        # Create the service file
+        SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+        SERVICE_CONTENT="[Unit]
+Description=${APP_NAME} Flask-SocketIO Web Application
+After=network.target
+
+[Service]
+Type=simple
+User=${SUDO_USER:-$(whoami)}
+WorkingDirectory=${APP_PATH}
+ExecStart=${APP_PATH}/start.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target"
+        
+        # Write service file (requires sudo)
+        echo "$SERVICE_CONTENT" | sudo tee "$SERVICE_FILE" > /dev/null
+        
+        if [[ $? -eq 0 ]]; then
+            # Reload systemd and enable the service
+            sudo systemctl daemon-reload
+            sudo systemctl enable "$SERVICE_NAME"
+            success "Created and enabled systemctl service: $SERVICE_NAME"
+            info "You can now use these commands:"
+            info "  sudo systemctl start $SERVICE_NAME"
+            info "  sudo systemctl stop $SERVICE_NAME"
+            info "  sudo systemctl status $SERVICE_NAME"
+            info "  sudo systemctl restart $SERVICE_NAME"
+        else
+            error "Failed to create systemctl service file. Check permissions and try again manually."
+        fi
+    fi
+else
+    warn "Skipping systemctl service setup. You can set it up manually later if needed."
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
 # Summary
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -1111,12 +1191,12 @@ echo ""
 
 success "Created Flask-SocketIO web application: $APP_NAME"
 echo ""
-echo "📁 Project directory: ./$APP_NAME"
+echo "📁 Project directory: $APP_PATH"
 echo ""
 echo "Next steps:"
 echo ""
 echo "  1. Navigate to the project:"
-echo "     ${BLUE}cd $APP_NAME${NC}"
+echo "     ${BLUE}cd $APP_PATH${NC}"
 echo ""
 echo "  2. Create and activate virtual environment:"
 echo "     ${BLUE}python3 -m venv venv${NC}"
@@ -1136,5 +1216,15 @@ echo "   - README.md - Project overview and usage"
 echo "   - SETUP_INSTRUCTIONS.md - Detailed setup guide"
 echo "   - config.py - Configuration variables"
 echo ""
+if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}\.service"; then
+    echo "🚀 Systemctl Service:"
+    echo "   - Service name: ${SERVICE_NAME}"
+    echo "   - Auto-starts on boot: YES"
+    echo "   - Start: sudo systemctl start ${SERVICE_NAME}"
+    echo "   - Stop: sudo systemctl stop ${SERVICE_NAME}"
+    echo "   - Status: sudo systemctl status ${SERVICE_NAME}"
+    echo "   - View logs: sudo journalctl -u ${SERVICE_NAME} -f"
+    echo ""
+fi
 echo "✨ Happy coding!"
 EOF
